@@ -20,7 +20,7 @@ POLL_SECONDS  = 20                          # how often to poll
 TIMEOUT_SEC   = 25                          # page load / selector timeouts
 
 # --- Discord webhook (REQUIRED) ---
-WEBHOOK_URL   = "PUT_YOUR_DISCORD_WEBHOOK_URL_HERE"
+WEBHOOK_URL   = "https://discordapp.com/api/webhooks/1434470166481338519/7c_bwalFDEkz3Q2f2O9PZgkC79DP2_qnp2eBDrATtohSd560kQnc-u2p1F3564wUpDhJ"
 
 # Mentions — choose ONE: everyone OR a role
 PING_EVERYONE = False                       # set True to ping @everyone
@@ -159,3 +159,4 @@ if __name__ == "__main__":
         run()
     except KeyboardInterrupt:
         print("[bot] stopped by user")
+
