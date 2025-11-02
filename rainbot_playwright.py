@@ -16,7 +16,7 @@ import requests
 VERSION = "RainBot v6 (Render-ready)"
 CHECK_URL = os.getenv("CHECK_URL", "https://bandit.camp")
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # <-- zet op Render als env var
+WEBHOOK_URL = os.getenv("https://discordapp.com/api/webhooks/1434470166481338519/7c_bwalFDEkz3Q2f2O9PZgkC79DP2_qnp2eBDrATtohSd560kQnc-u2p1F3564wUpDhJ")  # <-- zet op Render als env var
 TIMEOUT_SEC = int(os.getenv("TIMEOUT_SEC", "20"))
 USE_PLAYWRIGHT = os.getenv("USE_PLAYWRIGHT", "0").strip() in ("1", "true", "True")
 
@@ -132,3 +132,4 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
     start_health_server(port=port)
     main_loop()
+
