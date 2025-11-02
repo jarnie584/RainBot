@@ -1,6 +1,27 @@
+
 import time
 import requests
 from playwright.sync_api import sync_playwright
+
+# --- tiny health server for Render (HTTP 200) ---
+import os, threading
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route("/")
+def ok():
+    return "RainBot is running!", 200
+
+def start_health_server():
+    port = int(os.environ.get("PORT", "10000"))
+    threading.Thread(
+        target=lambda: app.run(host="0.0.0.0", port=port),
+        daemon=True
+    ).start()
+    print(f"Health server listening on port {port}")
+
+# --- end health server ---
 
 # =========================
 # RainBot Configuration
@@ -136,3 +157,11 @@ if __name__ == "__main__":
         run()
     except KeyboardInterrupt:
         print("Stopped by user")
+# --- main loop ---
+if __name__ == "__main__":
+    start_health_server()  # start de mini server zodat Render denkt dat de bot "leeft"
+    try:
+        run()
+    except KeyboardInterrupt:
+        print("Stopped by user")
+
