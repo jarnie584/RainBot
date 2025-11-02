@@ -1,29 +1,27 @@
 # rainbot_playwright.py
 # ---------------------------------------------------
 # Banditcamp Rain notifier (Render-ready)
-# - Health endpoint op $PORT
-# - Discord webhook via env var
-# - Requests als standaard checker, Playwright optioneel
+# - Health endpoint op $PORT (voor uptime/keepalive)
+# - Discord webhook via env var WEBHOOK_URL
+# - Standaard check met requests; Playwright optioneel (USE_PLAYWRIGHT=1)
+# - Playwright start met --no-sandbox (vereist in containers)
 # ---------------------------------------------------
 
 import os
 import time
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-
 import requests
 
-VERSION = "RainBot v5 (Render-ready)"
+VERSION = "RainBot v6 (Render-ready)"
 CHECK_URL = os.getenv("CHECK_URL", "https://bandit.camp")
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # <-- zet in Render Env Vars
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # <-- zet op Render als env var
 TIMEOUT_SEC = int(os.getenv("TIMEOUT_SEC", "20"))
 USE_PLAYWRIGHT = os.getenv("USE_PLAYWRIGHT", "0").strip() in ("1", "true", "True")
 
-TRIGGERS = [
-    # Pas deze woorden aan op wat jij op de pagina ziet als er 'rain' is
-    "rain", "join rain", "rain event", "rain pot", "raining"
-]
+# Pas deze woorden aan op echte signalen die op de site staan bij 'rain'
+TRIGGERS = ["rain", "join rain", "rain event", "rain pot", "raining"]
 
 # -----------------------
 # Health HTTP server
@@ -49,7 +47,7 @@ def start_health_server(port: int):
 # -----------------------
 def send_discord(msg: str):
     if not WEBHOOK_URL:
-        print("[WARN] WEBHOOK_URL ontbreekt (zet als Environment Variable op Render).")
+        print("[WARN] WEBHOOK_URL ontbreekt (zet deze env var op Render).")
         return
     try:
         r = requests.post(WEBHOOK_URL, json={"content": msg}, timeout=10)
@@ -61,12 +59,15 @@ def send_discord(msg: str):
         print(f"[ERR] Fout bij posten naar Discord: {e}")
 
 # -----------------------
-# Checkers
+# Trigger matching
 # -----------------------
 def _match_triggers(text: str) -> bool:
     t = text.lower()
     return any(trigger in t for trigger in TRIGGERS)
 
+# -----------------------
+# Checkers
+# -----------------------
 def check_with_requests() -> bool:
     try:
         print(f"[DBG] Requests check -> {CHECK_URL}")
@@ -78,7 +79,6 @@ def check_with_requests() -> bool:
         return False
 
 def check_with_playwright() -> bool:
-    # Playwright alléén gebruiken als env var aan staat
     try:
         from playwright.sync_api import sync_playwright
     except Exception as e:
@@ -88,7 +88,8 @@ def check_with_playwright() -> bool:
     try:
         print(f"[DBG] Playwright check -> {CHECK_URL}")
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            # Belangrijk op Render/containers: --no-sandbox
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
             context = browser.new_context()
             page = context.new_page()
             page.set_default_timeout(TIMEOUT_SEC * 1000)
@@ -110,8 +111,8 @@ def main_loop():
         print("[WARN] Geen WEBHOOK_URL gezet — er worden geen Discord-meldingen verstuurd.")
 
     checker = check_with_playwright if USE_PLAYWRIGHT else check_with_requests
-
     already_notified = False
+
     while True:
         try:
             has_rain = checker()
@@ -127,7 +128,7 @@ def main_loop():
         time.sleep(POLL_SECONDS)
 
 if __name__ == "__main__":
-    # Belangrijk voor Render: luister op $PORT
+    # Health server op de poort die Render meegeeft
     port = int(os.getenv("PORT", "10000"))
     start_health_server(port=port)
     main_loop()
