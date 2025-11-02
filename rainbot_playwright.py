@@ -1,167 +1,161 @@
+# rainbot_playwright.py
+# ---------------------------------------------------
+# Banditcamp Rain notifier (Playwright) + health server
+# Works on Render Free Web Service (no Background Worker needed)
+# ---------------------------------------------------
 
+import os
 import time
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 import requests
 from playwright.sync_api import sync_playwright
 
-# --- tiny health server for Render (HTTP 200) ---
-import os, threading
-from flask import Flask
+# ====== CONFIG ======
+VERSION       = "RainBot-English-v3 (Render + health)"
+CHECK_URL     = "https://bandit.camp"      # page to check
+POLL_SECONDS  = 20                          # how often to poll
+TIMEOUT_SEC   = 25                          # page load / selector timeouts
 
-app = Flask(__name__)
+# --- Discord webhook (REQUIRED) ---
+WEBHOOK_URL   = "PUT_YOUR_DISCORD_WEBHOOK_URL_HERE"
 
-@app.route("/")
-def ok():
-    return "RainBot is running!", 200
+# Mentions — choose ONE: everyone OR a role
+PING_EVERYONE = False                       # set True to ping @everyone
+ROLE_ID       = ""                          # e.g. "123456789012345678" (leave "" if unused)
+
+# ====== HEALTH SERVER (no Flask needed) ======
+# Render's Free Web Service expects a listening port.
+# This tiny HTTP server keeps the service 'UP' and fixes 502/no-open-ports.
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"RainBot OK")
+    def log_message(self, *args, **kwargs):
+        return  # silence default logging
 
 def start_health_server():
     port = int(os.environ.get("PORT", "10000"))
-    threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=port),
-        daemon=True
-    ).start()
-    print(f"Health server listening on port {port}")
+    server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"[health] listening on :{port}")
 
-# --- end health server ---
+# ====== DISCORD ======
+def send_discord(content: str):
+    if not WEBHOOK_URL or WEBHOOK_URL.startswith("PUT_"):
+        print("[discord] Missing WEBHOOK_URL – please set it in the file.")
+        return
 
-# =========================
-# RainBot Configuration
-# =========================
-VERSION = "RainBot-English-v2-mentions"
-
-WEBHOOK_URL = "https://discordapp.com/api/webhooks/1434470166481338519/7c_bwalFDEkz3Q2f2O9PZgkC79DP2_qnp2eBDrATtohSd560kQnc-u2p1F3564wUpDhJ"   # <-- PUT YOUR WEBHOOK HERE
-CHECK_URL   = "https://bandit.camp"
-POLL_SECONDS = 20
-
-# Mentions (choose ONE: everyone OR a specific role)
-PING_EVERYONE = False
-ROLE_ID = "1434479776525058109"
-
-# What to detect on the page to know rain is live
-RAIN_TEXTS = ["join rain event", "rakeback rain"]
-RAIN_SELECTORS = [
-    "text=JOIN RAIN EVENT",
-    "text=Rakeback Rain",
-    "button:has-text('JOIN RAIN EVENT')",
-]
-
-# =========================
-# Discord notifier (embed + optional mention)
-# =========================
-def send_discord(msg: str):
-    # Build mention payload (optional)
-    mention_content = ""
-    allowed_mentions = {"parse": []}
-
-    if PING_EVERYONE:
-        mention_content = "@everyone"
-        allowed_mentions["parse"].append("everyone")
-    elif ROLE_ID:
-        mention_content = f"<@&{ROLE_ID}>"
-        allowed_mentions["roles"] = [ROLE_ID]
-
-    embed = {
-        "title": "🌧️ Rain event is live!",
-        "description": f"{msg}\n**Check it out:** {CHECK_URL}",
-        "url": CHECK_URL,
-        "color": 0x3498db,
-        "footer": {"text": "RainBot – Live Alert"},
-        "timestamp": __import__("datetime").datetime.utcnow().isoformat(),
-    }
-
-    payload = {
-        "username": "RainBot",
-        "content": mention_content,           # the actual ping text (can be empty)
-        "allowed_mentions": allowed_mentions, # allow Discord to ping
-        "embeds": [embed],
-    }
-
+    data = {"content": content}
     try:
-        r = requests.post(WEBHOOK_URL, json=payload, timeout=12)
+        r = requests.post(WEBHOOK_URL, json=data, timeout=15)
         r.raise_for_status()
-        print("✅ Discord embed sent.")
+        print("[discord] sent")
     except Exception as e:
-        print("Webhook error:", e)
+        print(f"[discord] error: {e}")
 
-# =========================
-# Detection logic
-# =========================
-def page_has_rain(page) -> bool:
-    # Let the page render JS content
-    page.wait_for_load_state("domcontentloaded")
-    time.sleep(2)
-    page.wait_for_load_state("networkidle")
-    time.sleep(1)
+def build_mention_prefix() -> str:
+    if PING_EVERYONE:
+        return "@everyone "
+    if ROLE_ID:
+        return f"<@&{ROLE_ID}> "
+    return ""
 
-    # 1) Try selectors
-    for sel in RAIN_SELECTORS:
+# ====== RAIN DETECTION ======
+def is_rain_live(page) -> bool:
+    """
+    Tries multiple strategies:
+    - Visible text like 'JOIN RAIN EVENT' or 'Rakeback Rain'
+    - Presence of the join button
+    """
+    try:
+        # quick contains-text checks
+        txt = page.inner_text("body", timeout=TIMEOUT_SEC).lower()
+        needles = [
+            "join rain event",
+            "rakeback rain",
+            "rain event is live",
+            "join now to get free scrap",
+        ]
+        if any(n in txt for n in needles):
+            return True
+    except Exception:
+        pass
+
+    # Try a few likely selectors for the join button/badge
+    candidates = [
+        "text=JOIN RAIN EVENT",
+        "button:has-text('JOIN RAIN EVENT')",
+        "[data-test*='rain']",
+        "text=Rakeback Rain",
+    ]
+    for sel in candidates:
         try:
-            loc = page.locator(sel)
-            if loc.count() > 0 and loc.first.is_visible():
+            el = page.query_selector(sel, timeout=2000)
+            if el:
                 return True
         except Exception:
-            pass
+            continue
 
-    # 2) Fallback: plain text search
-    content = page.content().lower()
-    return any(t in content for t in RAIN_TEXTS)
+    return False
 
-# =========================
-# Main loop
-# =========================
+# ====== MAIN LOOP ======
 def run():
-    last_seen = False  # prevents multiple alerts for the same rain
-    print(f"RainBot (Playwright) started → {CHECK_URL} | {VERSION}")
+    print(f"[bot] starting → {CHECK_URL} | {VERSION}")
+    last_seen_live = False
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ],
+        )
         context = browser.new_context(
             user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/122.0.0.0 Safari/537.36")
+                        "Chrome/120.0.0.0 Safari/537.36"),
+            viewport={"width": 1366, "height": 768},
         )
         page = context.new_page()
 
         while True:
             try:
-                page.goto(CHECK_URL, wait_until="networkidle", timeout=60000)
-
-                # Try to dismiss cookie banners if present
-                for btn_text in ["Accept All", "I Agree", "Accept", "Allow Cookies", "OK"]:
-                    try:
-                        page.locator(f"button:has-text('{btn_text}')").first.click(timeout=1500)
-                    except Exception:
-                        pass
-
-                live = page_has_rain(page)
-
+                page.goto(CHECK_URL, wait_until="domcontentloaded", timeout=TIMEOUT_SEC * 1000)
             except Exception as e:
-                print("Navigation error:", e)
-                live = False
+                print(f"[check] load error: {e}")
+                time.sleep(POLL_SECONDS)
+                continue
 
-            if live and not last_seen:
-                print("RAIN DETECTED → sending Discord notification")
-                send_discord("A new rain event just started! 🌦️")
-                last_seen = True
-            elif not live and last_seen:
-                print("Rain ended → reset state")
-                last_seen = False
+            live = False
+            try:
+                live = is_rain_live(page)
+            except Exception as e:
+                print(f"[check] detect error: {e}")
+
+            if live and not last_seen_live:
+                msg = f"{build_mention_prefix()}**Rain event is live!** → {CHECK_URL}"
+                print("[state] RAIN DETECTED → discord")
+                send_discord(msg)
+                last_seen_live = True
+            elif (not live) and last_seen_live:
+                print("[state] rain ended → reset")
+                last_seen_live = False
             else:
-                print("No rain detected.")
+                print("[state] no rain…")
 
             time.sleep(POLL_SECONDS)
 
-# =========================
-# Entry point
-# =========================
+# ====== ENTRYPOINT ======
 if __name__ == "__main__":
+    start_health_server()  # keeps Render Web Service happy
     try:
         run()
     except KeyboardInterrupt:
-        print("Stopped by user")
-# --- main loop ---
-if __name__ == "__main__":
-    start_health_server()  # start de mini server zodat Render denkt dat de bot "leeft"
-    try:
-        run()
-    except KeyboardInterrupt:
-        print("Stopped by user")
-
+        print("[bot] stopped by user")
